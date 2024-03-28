@@ -1,0 +1,41 @@
+resource "aws_autoscaling_group" "front_asg" {
+  name                 = "frontend-asg"
+  launch_configuration = aws_launch_configuration.frontend_lc.id
+  min_size             = 1
+  max_size             = 3
+  desired_capacity     = 1
+  vpc_zone_identifier  = [aws_subnet.public.id]
+  health_check_type    = "ELB"
+  health_check_grace_period = 30
+
+depends_on = [
+    aws_vpc.my_vpc,
+    aws_subnet.public,
+    aws_subnet.public2,
+    # Add other dependencies here if needed
+  ]
+}
+  
+# Create a new ALB Target Group attachment
+resource "aws_autoscaling_attachment" "front_asg_attachment" {
+  autoscaling_group_name = aws_autoscaling_group.front_asg.id
+  lb_target_group_arn    = aws_lb_target_group.tg_group.arn
+}
+
+resource "aws_autoscaling_policy" "cpu_utilization_policy" {
+  count = length(aws_autoscaling_group.front_asg)
+
+  name                   = "cpu-utilization-policy-${count.index}"
+  autoscaling_group_name = element(aws_autoscaling_group.front_asg[*].name, count.index)
+  policy_type            = "TargetTrackingScaling"
+
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+
+    target_value = 70
+  }
+}
+
+

@@ -1,0 +1,160 @@
+provider "aws" {
+  region = "your_aws_region"
+}
+
+# Create a VPC
+resource "aws_vpc" "my_vpc" {
+  cidr_block = "10.0.0.0/16"
+  enable_dns_support = true
+  enable_dns_hostnames = true
+}
+
+# Create a public subnet
+resource "aws_subnet" "public_subnet" {
+  vpc_id     = aws_vpc.my_vpc.id
+  cidr_block = "10.0.1.0/24"
+  map_public_ip_on_launch = true
+}
+
+# Create an Internet Gateway
+resource "aws_internet_gateway" "my_igw" {
+  vpc_id = aws_vpc.my_vpc.id
+}
+
+# Attach Internet Gateway to VPC
+resource "aws_vpc_attachment" "igw_attachment" {
+  vpc_id       = aws_vpc.my_vpc.id
+  internet_gateway_id = aws_internet_gateway.my_igw.id
+}
+
+# Create a security group for ALB
+resource "aws_security_group" "lb_sg" {
+  vpc_id = aws_vpc.my_vpc.id
+
+  // Add inbound rules for ALB
+  // Example: Allow HTTP from anywhere
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  // Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# Create IAM role for S3 access with administrative permissions
+resource "aws_iam_role" "s3_access_role" {
+  name = "s3_access_role"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+# Attach administrative policy to IAM role
+resource "aws_iam_policy_attachment" "admin_policy_attachment" {
+  name       = "s3_access_role_admin_attachment"
+  roles      = [aws_iam_role.s3_access_role.name]
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
+# Launch Configuration
+resource "aws_launch_configuration" "app_server_lc" {
+  name_prefix                 = "app-server-lc-"
+  image_id                    = "your_ami_id"
+  instance_type               = "t2.micro"
+  security_groups             = [aws_security_group.app_server_sg.id]
+  key_name                    = "your_key_name"
+  iam_instance_profile        = aws_iam_role.s3_access_role.name
+
+  user_data = <<-EOF
+              #!/bin/bash
+              aws s3 sync s3://your_bucket_name /var/www/html
+              # Add your custom user data script here
+              EOF
+}
+
+# Auto Scaling Group
+resource "aws_autoscaling_group" "app_server_asg" {
+  launch_configuration        = aws_launch_configuration.app_server_lc.name
+  min_size                    = 1
+  max_size                    = 5
+  desired_capacity            = 1
+  vpc_zone_identifier         = [aws_subnet.public_subnet.id]
+
+  tag {
+    key                 = "Name"
+    value               = "app-server"
+    propagate_at_launch = true
+  }
+
+  // Auto Scaling Policy
+  scaling_policies {
+    adjustment_type = "ChangeInCapacity"
+    estimated_instance_warmup = 60
+    policy_type     = "TargetTrackingScaling"
+    target_tracking_configuration {
+      predefined_metric_specification {
+        predefined_metric_type = "ASGAverageCPUUtilization"
+      }
+      target_value = 70.0
+    }
+  }
+}
+
+# CloudFront Distribution
+resource "aws_cloudfront_distribution" "my_cf_distribution" {
+  origin {
+    domain_name = aws_lb.my_lb.dns_name
+    origin_id   = "my-app-server-origin"
+  }
+  
+  enabled             = true
+  default_root_object = "index.html"
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id = "my-app-server-origin"
+    viewer_protocol_policy = "redirect-to-https"
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+  }
+  
+  price_class = "PriceClass_200"
+
+  # Add your CloudFront settings here
+}
+
+# Route 53 Record
+resource "aws_route53_record" "my_dns_record" {
+  zone_id = "your_zone_id"
+  name    = "your_domain_name"
+  type    = "A"
+  alias {
+    name                   = aws_cloudfront_distribution.my_cf_distribution.domain_name
+    zone_id                = aws_cloudfront_distribution.my_cf_distribution.hosted_zone_id
+    evaluate_target_health = false
+  }
+}

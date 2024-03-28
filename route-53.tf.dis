@@ -1,0 +1,29 @@
+
+
+resource "aws_route53_zone" "example_zone" {
+  name = "adityacc.in"  # Replace with your domain name
+}
+
+resource "aws_route53_record" "alb_record" {
+  zone_id = aws_route53_zone.example_zone.zone_id
+  name    = "adityacc.in"  # Replace with your domain name
+  type    = "A"
+  alias {
+    name                   = data.aws_lb.alb_data.dns_name  # Replace with your ALB's DNS name
+    zone_id                = output.alb_dns_name.value  # Replace with your ALB's hosted zone ID
+    evaluate_target_health = true
+  }
+}
+
+
+data "aws_lb" "alb_data" {
+  name = "front-ALB"
+}
+
+output "alb_dns_name" {
+  value = data.aws_lb.alb.dns_name
+}
+
+output "alb_zone_id" {
+  value = data.aws_lb.example.zone_id
+}
